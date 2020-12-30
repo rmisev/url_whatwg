@@ -44,6 +44,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+      with:
+        fetch-depth: 2
     - name: init dependances
       run: ./init.sh
     - name: apt-get install
