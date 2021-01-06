@@ -1,0 +1,12 @@
+freebsd_instance:
+  image_family: freebsd-12-1
+
+task:
+  install_script: |
+    pkg install -y cmake
+  build_script: |
+    ./init.sh
+    cmake -S . -B build -DCMAKE_CXX_STANDARD=17
+    cmake --build build
+  test_script: |
+    cd build ; ctest -V
