@@ -2,8 +2,9 @@ freebsd_instance:
   image_family: freebsd-12-1
 
 task:
+  name: FreeBSD
   install_script: |
-    pkg install -y cmake
+    pkg install -y cmake git
   build_script: |
     ./init.sh
     cmake -S . -B build -DCMAKE_CXX_STANDARD=17
