@@ -33,6 +33,12 @@
 #include <string>
 #include <utility>
 #include <vector>
+#if defined(__has_include)
+# if __has_include(<filesystem>)
+#  include <filesystem>
+#  define WHATWG_URL_USE_FILESYSTEM
+# endif
+#endif
 
 // not yet
 #define WHATWG_URL_USE_ENCODING 0
@@ -2815,6 +2821,25 @@ inline url url_from_file_path(StrT&& str) {
         throw url_error(url_result::EmptyPath, "Empty path");
     }
 }
+
+#ifdef WHATWG_URL_USE_FILESYSTEM
+
+/// @brief Make URL from OS file path
+///
+/// Throws url_error exception on error.
+///
+/// @param[in] path absolute file path
+/// @return file URL
+inline url url_from_file_path(const std::filesystem::path& path) {
+    // Use the native format, to let the string version of this function detect OS specifics
+#ifdef _WIN32
+    return url_from_file_path(path.native()); // UTF-16
+#else
+    return url_from_file_path(path.u8string()); // UTF-8
+#endif
+}
+
+#endif
 
 
 } // namespace whatwg
