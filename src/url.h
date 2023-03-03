@@ -33,7 +33,7 @@
 #include <string>
 #include <utility>
 #include <vector>
-#if defined(__has_include)
+#if defined(WHATWG__CPP_17) && defined(__has_include)
 # if __has_include(<filesystem>)
 #  include <filesystem>
 #  define WHATWG_URL_USE_FILESYSTEM
