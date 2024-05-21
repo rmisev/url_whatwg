@@ -129,6 +129,7 @@ if (UPA_BUILD_TESTS OR UPA_BUILD_BENCH OR UPA_BUILD_FUZZER OR UPA_BUILD_EXAMPLES
       INTERFACE single_include)
   else()
     add_library(${upa_lib_target} STATIC
+      src/idna.cpp
       src/url.cpp
       src/url_idna.cpp
       src/url_ip.cpp

@@ -6,10 +6,18 @@
 #ifndef UPA_URL_HOST_H
 #define UPA_URL_HOST_H
 
+#ifndef UPA_USE_ICU
+#define UPA_USE_ICU 0
+#endif // UPA_USE_ICU
+
 #include "buffer.h"
 #include "config.h"
 #include "str_arg.h"
-#include "url_idna.h"
+#if UPA_USE_ICU
+# include "url_idna.h"
+#else
+# include "idna.h"
+#endif
 #include "url_ip.h"
 #include "url_percent_encode.h"
 #include "url_result.h"
@@ -213,6 +221,7 @@ inline validation_errc host_parser::parse_host(const CharT* first, const CharT* 
             return validation_errc::domain_invalid_code_point;
     }
 
+#if UPA_USE_ICU
     // Input for domain_to_ascii
     simple_buffer<char16_t> buff_uc;
 
@@ -267,6 +276,69 @@ inline validation_errc host_parser::parse_host(const CharT* first, const CharT* 
     const auto res = domain_to_ascii(buff_uc.data(), buff_uc.size(), buff_ascii);
     if (res != validation_errc::ok)
         return res;
+#else
+    std::string buff_ascii;
+
+    const auto pes = std::find(ptr, last, '%');
+    if (pes == last) {
+        // Input is ASCII if ptr == last
+        if (!idna::domain_to_ascii(buff_ascii, first, last, false, ptr == last))
+            return validation_errc::domain_to_ascii;
+    } else {
+        // Input for domain_to_ascii
+        simple_buffer<char32_t> buff_uc;
+
+        // copy ASCII chars
+        for (auto it = first; it != ptr; ++it) {
+            const auto uch = static_cast<UCharT>(*it);
+            buff_uc.push_back(static_cast<char32_t>(uch));
+        }
+
+        // Let buff_uc be the result of running UTF-8 decode (to UTF-16) without BOM
+        // on the percent decoding of UTF-8 encode on input
+        for (auto it = ptr; it != last;) {
+            const auto uch = static_cast<UCharT>(*it++);
+            if (uch < 0x80) {
+                if (uch != '%') {
+                    buff_uc.push_back(static_cast<char32_t>(uch));
+                    continue;
+                }
+                // uch == '%'
+                unsigned char uc8; // NOLINT(cppcoreguidelines-init-variables)
+                if (detail::decode_hex_to_byte(it, last, uc8)) {
+                    if (uc8 < 0x80) {
+                        buff_uc.push_back(static_cast<char32_t>(uc8));
+                        continue;
+                    }
+                    // percent encoded utf-8 sequence
+                    // TODO: gal po vieną code_point, tuomet užtektų utf-8 buferio vienam simboliui
+                    simple_buffer<char> buff_utf8;
+                    buff_utf8.push_back(static_cast<char>(uc8));
+                    while (it != last && *it == '%') {
+                        ++it; // skip '%'
+                        if (!detail::decode_hex_to_byte(it, last, uc8))
+                            uc8 = '%';
+                        buff_utf8.push_back(static_cast<char>(uc8));
+                    }
+                    // utf-8 to utf-32
+                    const auto* last_utf8 = buff_utf8.data() + buff_utf8.size();
+                    for (const auto* it_utf8 = buff_utf8.data(); it_utf8 < last_utf8;)
+                        buff_uc.push_back(url_utf::read_utf_char(it_utf8, last_utf8).value);
+                    //buff_utf8.clear();
+                    continue;
+                }
+                // detected an invalid percent-encoding sequence
+                buff_uc.push_back('%');
+            } else { // uch >= 0x80
+                --it;
+                buff_uc.push_back(url_utf::read_utf_char(it, last).value);
+            }
+        }
+        if (!idna::domain_to_ascii(buff_ascii, buff_uc.begin(), buff_uc.end()))
+            return validation_errc::domain_to_ascii;
+    }
+#endif
+
     if (detail::contains_forbidden_domain_char(buff_ascii.data(), buff_ascii.data() + buff_ascii.size())) {
         // 7. If asciiDomain contains a forbidden domain code point, domain-invalid-code-point
         // validation error, return failure.
@@ -274,8 +346,8 @@ inline validation_errc host_parser::parse_host(const CharT* first, const CharT* 
     }
 
     // If asciiDomain ends in a number, return the result of IPv4 parsing asciiDomain
-    if (hostname_ends_in_a_number(buff_ascii.begin(), buff_ascii.end()))
-        return parse_ipv4(buff_ascii.begin(), buff_ascii.end(), dest);
+    if (hostname_ends_in_a_number(buff_ascii.data(), buff_ascii.data() + buff_ascii.size()))
+        return parse_ipv4(buff_ascii.data(), buff_ascii.data() + buff_ascii.size(), dest);
 
     if (dest.need_save()) {
         // Return asciiDomain
