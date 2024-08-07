@@ -3,6 +3,8 @@ codecov:
 
 ignore:
   - "deps"
+  - "include/upa/idna.h"
+  - "src/idna.cpp"
   - "test"
 
 coverage:
