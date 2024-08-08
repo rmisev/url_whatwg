@@ -70,8 +70,71 @@ int test_from_file(RunTests run_tests, const char* file_name)
 
 // URL parser test
 
-class ParserObj : public std::map<std::string, std::string> {
+class string_or_null {
 public:
+    // construct
+    string_or_null() noexcept = default;
+    string_or_null(const string_or_null&) = default;
+    string_or_null(string_or_null&&) noexcept = default;
+    string_or_null(const picojson::value& json_value)
+        : has_val_{ !json_value.is<picojson::null>() }
+    {
+        if (has_val_)
+            val_ = json_value.get<std::string>();
+    }
+    ~string_or_null() = default;
+
+    // assign
+    string_or_null& operator=(const string_or_null&) = default;
+    string_or_null& operator=(string_or_null&&) noexcept = default;
+
+    // has value?
+    explicit operator bool() const noexcept {
+        return has_val_;
+    }
+    bool has_value() const noexcept {
+        return has_val_;
+    }
+
+    // get value
+    const std::string& value() const noexcept {
+        return val_;
+    }
+    const std::string* operator->() const noexcept {
+        return &val_;
+    }
+    const std::string& operator*() const& noexcept {
+        return val_;
+    }
+private:
+    bool has_val_ = false;
+    std::string val_;
+};
+
+class parsed_obj : public std::map<std::string, string_or_null> {
+public:
+    parsed_obj() = default;
+    parsed_obj(const picojson::object& json_obj) {
+        for (const auto& item : json_obj)
+            emplace(item.first, item.second);
+    }
+
+    template<class K>
+    bool has(const K& key) const {
+        return find(key) != end();
+    }
+};
+
+class parsed_obj_with_failure : public parsed_obj {
+public:
+    parsed_obj_with_failure() = default;
+    parsed_obj_with_failure(const picojson::object& json_obj) {
+        for (const auto& item : json_obj)
+            if (item.first == "failure")
+                failure = item.second.evaluate_as_boolean();
+            else
+                emplace(item.first, item.second);
+    }
     bool failure = false;
 };
 
@@ -79,67 +142,72 @@ public:
 // https://github.com/web-platform-tests/wpt/blob/master/url/url-constructor.any.js
 // https://github.com/web-platform-tests/wpt/blob/master/url/url-origin.any.js
 //
-void test_parser(DataDrivenTest& ddt, ParserObj& obj)
+// Here is ignored "relativeTo" field intended for browsers only; see:
+// https://github.com/web-platform-tests/wpt/pull/39203
+// https://github.com/web-platform-tests/wpt/blob/master/url/failure.html
+// https://github.com/web-platform-tests/wpt/blob/master/url/resources/a-element.js
+//
+void test_parser(DataDrivenTest& ddt, const parsed_obj_with_failure& obj)
 {
     // https://github.com/web-platform-tests/wpt/blob/master/url/README.md
     // `base`: an absolute URL as a string whose parsing without a base of its own must succeed.
     // `input`: an URL as a string to be parsed with `base` as its base URL.
-    const std::string& base = obj["base"];
-    const std::string& input = obj["input"];
+    const auto& base = obj.at("base");
+    const auto& input = obj.at("input");
 
-    const std::string str_case("Parsing <" + input + "> " + (base.empty() ? "without base" : "against <" + base + ">"));
+    const std::string str_case("Parsing <" + *input + "> " + (base ? "against <" + *base + ">" : "without base"));
 
     ddt.test_case(str_case, [&](DataDrivenTest::TestCase& tc) {
         upa::url url;
 
-        bool parse_success = base.empty()
-            ? upa::success(url.parse(input))
-            : upa::success(url.parse(input, base));
+        bool parse_success = base
+            ? upa::success(url.parse(*input, *base))
+            : upa::success(url.parse(*input));
 
         // check "failure"
         tc.assert_equal(obj.failure, !parse_success, "parse failure");
 
         // attributes
         if (parse_success && !obj.failure) {
-            tc.assert_equal(obj["href"], url.href(), "href");
+            tc.assert_equal(*obj.at("href"), url.href(), "href");
             auto it_origin = obj.find("origin");
             if (it_origin != obj.end())
-                tc.assert_equal(it_origin->second, url.origin(), "origin");
-            tc.assert_equal(obj["protocol"], url.protocol(), "protocol");
-            tc.assert_equal(obj["username"], url.username(), "username");
-            tc.assert_equal(obj["password"], url.password(), "password");
-            tc.assert_equal(obj["host"], url.host(), "host");
-            tc.assert_equal(obj["hostname"], url.hostname(), "hostname");
-            tc.assert_equal(obj["port"], url.port(), "port");
-            tc.assert_equal(obj["pathname"], url.pathname(), "pathname");
-            tc.assert_equal(obj["search"], url.search(), "search");
+                tc.assert_equal(*it_origin->second, url.origin(), "origin");
+            tc.assert_equal(*obj.at("protocol"), url.protocol(), "protocol");
+            tc.assert_equal(*obj.at("username"), url.username(), "username");
+            tc.assert_equal(*obj.at("password"), url.password(), "password");
+            tc.assert_equal(*obj.at("host"), url.host(), "host");
+            tc.assert_equal(*obj.at("hostname"), url.hostname(), "hostname");
+            tc.assert_equal(*obj.at("port"), url.port(), "port");
+            tc.assert_equal(*obj.at("pathname"), url.pathname(), "pathname");
+            tc.assert_equal(*obj.at("search"), url.search(), "search");
             auto it_search_params = obj.find("searchParams");
             if (it_search_params != obj.end())
-                tc.assert_equal(it_search_params->second, url.search_params().to_string(), "searchParams");
-            tc.assert_equal(obj["hash"], url.hash(), "hash");
+                tc.assert_equal(*it_search_params->second, url.search_params().to_string(), "searchParams");
+            tc.assert_equal(*obj.at("hash"), url.hash(), "hash");
         }
 
         // https://github.com/web-platform-tests/wpt/pull/10955
         // https://github.com/web-platform-tests/wpt/blob/master/url/failure.html
         // If a URL fails to parse with any valid base, it must also fail to parse with no base,
         // i.e. when used as a base URL itself.
-        if (obj.failure && !base.empty()) {
-            parse_success = upa::success(url.parse(input));
+        if (obj.failure && base) {
+            parse_success = upa::success(url.parse(*input));
             // check "failure"
             tc.assert_equal(obj.failure, !parse_success, "parse failure WITH NO BASE");
         }
 
         // Test url::can_parse
 
-        bool can_parse_success = base.empty()
-            ? upa::url::can_parse(input)
-            : upa::url::can_parse(input, base);
+        bool can_parse_success = base
+            ? upa::url::can_parse(*input, *base)
+            : upa::url::can_parse(*input);
 
         // check "success"
         tc.assert_equal(!obj.failure, can_parse_success, "can_parse");
 
-        if (obj.failure && !base.empty()) {
-            can_parse_success = upa::url::can_parse(input);
+        if (obj.failure && base) {
+            can_parse_success = upa::url::can_parse(*input);
             tc.assert_equal(!obj.failure, can_parse_success, "can_parse WITH NO BASE");
         }
     });
@@ -148,7 +216,7 @@ void test_parser(DataDrivenTest& ddt, ParserObj& obj)
 //
 // https://github.com/web-platform-tests/wpt/blob/master/url/toascii.window.js
 //
-void test_host_parser(DataDrivenTest& ddt, ParserObj& obj)
+void test_host_parser(DataDrivenTest& ddt, const parsed_obj& obj)
 {
     // Test file format (toascii.json):
     // https://github.com/web-platform-tests/wpt/tree/master/url#toasciijson
@@ -160,51 +228,51 @@ void test_host_parser(DataDrivenTest& ddt, ParserObj& obj)
         return str_url;
     };
 
-    const std::string& input = obj["input"];
-    std::string str_case("Parse URL with host: \"" + input + "\"");
+    // "input" and "output" are mandatory
+    const auto& input = obj.at("input");
+    const auto& output = obj.at("output");
+
+    std::string str_case("Parse URL with host: \"" + *input + "\"");
 
     ddt.test_case(str_case, [&](DataDrivenTest::TestCase& tc) {
-        const std::string input_url(make_url(input));
+        const std::string input_url(make_url(*input));
 
         upa::url url;
         const bool parse_success = upa::success(url.parse(input_url));
 
-        // check "failure"
-        tc.assert_equal(obj.failure, !parse_success, "parse failure");
+        // check if parse must succeed
+        tc.assert_equal(output.has_value(), parse_success, "parse success");
 
         // attributes
-        if (parse_success && !obj.failure) {
-            const std::string& output = obj["output"];
-            const std::string output_url(make_url(output));
+        if (parse_success && output) {
+            const std::string output_url(make_url(*output));
 
-            tc.assert_equal(output_url, url.href(), "href");
-            tc.assert_equal(output, url.host(), "host");
-            tc.assert_equal(output, url.hostname(), "hostname");
+            tc.assert_equal(*output, url.host(), "host");
+            tc.assert_equal(*output, url.hostname(), "hostname");
             tc.assert_equal("/x", url.pathname(), "pathname");
+            tc.assert_equal(output_url, url.href(), "href");
         }
     });
 
-    str_case = "Set URL.host to: \"" + input + "\"";
+    str_case = "Set URL.host to: \"" + *input + "\"";
     ddt.test_case(str_case, [&](DataDrivenTest::TestCase& tc) {
-        upa::url url(make_url("x"), nullptr);
+        upa::url url(make_url("x"));
 
-        url.host(input);
-        if (!obj.failure) {
-            const std::string& output = obj["output"];
-            tc.assert_equal(output, url.host(), "host");
+        url.host(*input);
+        if (output) {
+            tc.assert_equal(*output, url.host(), "host");
         } else {
             tc.assert_equal("x", url.host(), "host");
         }
     });
 
-    str_case = "Set URL.hostname to: \"" + input + "\"";
+    str_case = "Set URL.hostname to: \"" + *input + "\"";
     ddt.test_case(str_case, [&](DataDrivenTest::TestCase& tc) {
-        upa::url url(make_url("x"), nullptr);
+        upa::url url(make_url("x"));
 
-        url.hostname(input);
-        if (!obj.failure) {
-            const std::string& output = obj["output"];
-            tc.assert_equal(output, url.hostname(), "hostname");
+        url.hostname(*input);
+        if (output) {
+            tc.assert_equal(*output, url.hostname(), "hostname");
         } else {
             tc.assert_equal("x", url.hostname(), "hostname");
         }
@@ -214,7 +282,7 @@ void test_host_parser(DataDrivenTest& ddt, ParserObj& obj)
 //
 // https://github.com/web-platform-tests/wpt/blob/master/url/IdnaTestV2.window.js
 //
-void test_idna_v2(DataDrivenTest& ddt, ParserObj& obj)
+void test_idna_v2(DataDrivenTest& ddt, const parsed_obj& obj)
 {
     // Test file format (toascii.json):
     // https://github.com/web-platform-tests/wpt/tree/master/url#toasciijson
@@ -232,28 +300,32 @@ void test_idna_v2(DataDrivenTest& ddt, ParserObj& obj)
         return input;
     };
 
-    const std::string& input = obj["input"];
-    const std::string& comment = obj["comment"];
-    std::string str_case("ToASCII(\"" + input + "\")");
-    if (!comment.empty())
-        str_case += " " + comment;
+    // "input" and "output" are mandatory
+    const auto& input = obj.at("input");
+    const auto& output = obj.at("output");
+    // cannot test empty string input through new URL()
+    if (input->empty())
+        return;
+
+    std::string str_case("ToASCII(\"" + *input + "\")");
+    if (obj.has("comment"))
+        str_case += " " + *obj.at("comment");
 
     ddt.test_case(str_case, [&](DataDrivenTest::TestCase& tc) {
-        const std::string input_url(make_url(encodeHostEndingCodePoints(input)));
+        const std::string input_url(make_url(encodeHostEndingCodePoints(*input)));
 
         upa::url url;
         const bool parse_success = upa::success(url.parse(input_url));
 
-        // check "failure"
-        tc.assert_equal(obj.failure, !parse_success, "parse failure");
+        // check if parse must succeed
+        tc.assert_equal(output.has_value(), parse_success, "parse success");
 
         // attributes
-        if (parse_success && !obj.failure) {
-            const std::string& output = obj["output"];
-            const std::string output_url(make_url(output));
+        if (parse_success && output) {
+            const std::string output_url(make_url(*output));
 
-            tc.assert_equal(output, url.host(), "host");
-            tc.assert_equal(output, url.hostname(), "hostname");
+            tc.assert_equal(*output, url.host(), "host");
+            tc.assert_equal(*output, url.hostname(), "hostname");
             tc.assert_equal("/x", url.pathname(), "pathname");
             tc.assert_equal(output_url, url.href(), "href");
         }
@@ -364,97 +436,61 @@ void test_percent_encoding(DataDrivenTest& ddt, EncodingObj& obj)
 
 // Read samples from JSON files and run tests
 
-namespace {
-    enum class TestType {
-        UrlParser,
-        HostParser,
-        IdnaTestV2
-    };
-
-    int load_and_run_tests(DataDrivenTest& ddt, TestType test_type, const char* file_name) {
-        const auto test_item = [&](const picojson::value& item) {
-            // analyze array item
-            if (item.is<picojson::object>()) {
-                ParserObj obj;
-
-                for (const auto& p : item.get<picojson::object>()) {
-                    switch (test_type) {
-                    case TestType::UrlParser:
-                        // boolean fields
-                        if (p.first == "failure") {
-                            obj.failure = p.second.evaluate_as_boolean();
-                            continue;
-                        }
-                        if (p.first == "relativeTo") {
-                            // skip field intended for browsers only; see:
-                            // https://github.com/web-platform-tests/wpt/pull/39203
-                            // https://github.com/web-platform-tests/wpt/blob/master/url/failure.html
-                            // https://github.com/web-platform-tests/wpt/blob/master/url/resources/a-element.js
-                            continue;
-                        }
-                        break;
-                    case TestType::HostParser:
-                        if (p.first == "output" && p.second.is<picojson::null>()) {
-                            obj.failure = true;
-                            continue;
-                        }
-                        break;
-                    case TestType::IdnaTestV2:
-                        if (p.first == "input" && p.second.is<std::string>() && p.second.get<std::string>().empty()) {
-                            return true; // cannot test empty string input through new URL()
-                        }
-                        if (p.first == "output" && p.second.is<picojson::null>()) {
-                            obj.failure = true;
-                            continue;
-                        }
-                        break;
-                    }
-                    // do not store null values
-                    if (p.second.is<picojson::null>())
-                        continue;
-                    // string fields
-                    if (!p.second.is<std::string>())
-                        return false; // error: need string
-                    obj[p.first] = p.second.get<std::string>();
-                }
-                // run item test
-                switch (test_type) {
-                case TestType::UrlParser:
-                    test_parser(ddt, obj);
-                    break;
-                case TestType::HostParser:
-                    test_host_parser(ddt, obj);
-                    break;
-                case TestType::IdnaTestV2:
-                    test_idna_v2(ddt, obj);
-                    break;
-                }
-            } else if (item.is<std::string>()) {
-                // comment
-                // std::cout << item.get<std::string>() << std::endl;
-            } else {
-                std::cout << "[ERR: invalid file]" << std::endl;
-                return false;
-            }
-            return true;
-        };
-        json_util::root_array_context<decltype(test_item)> context{ test_item };
-
-        return json_util::load_file(context, file_name);
-    }
-
-} // namespace
-
 int run_parser_tests(DataDrivenTest& ddt, const char* file_name) {
-    return load_and_run_tests(ddt, TestType::UrlParser, file_name);
+    const auto test_item = [&](const picojson::value& item) {
+        // analyze array item
+        if (item.is<picojson::object>()) {
+            test_parser(ddt, item.get<picojson::object>());
+        } else if (item.is<std::string>()) {
+            // comment
+            // std::cout << item.get<std::string>() << std::endl;
+        } else {
+            std::cout << "[ERR: invalid file]" << std::endl;
+            return false;
+        }
+        return true;
+    };
+    json_util::root_array_context<decltype(test_item)> context{ test_item };
+
+    return json_util::load_file(context, file_name);
 }
 
 int run_host_parser_tests(DataDrivenTest& ddt, const char* file_name) {
-    return load_and_run_tests(ddt, TestType::HostParser, file_name);
+    const auto test_item = [&](const picojson::value& item) {
+        // analyze array item
+        if (item.is<picojson::object>()) {
+            test_host_parser(ddt, item.get<picojson::object>());
+        } else if (item.is<std::string>()) {
+            // comment
+            // std::cout << item.get<std::string>() << std::endl;
+        } else {
+            std::cout << "[ERR: invalid file]" << std::endl;
+            return false;
+        }
+        return true;
+    };
+    json_util::root_array_context<decltype(test_item)> context{ test_item };
+
+    return json_util::load_file(context, file_name);
 }
 
 int run_idna_v2_tests(DataDrivenTest& ddt, const char* file_name) {
-    return load_and_run_tests(ddt, TestType::IdnaTestV2, file_name);
+    const auto test_item = [&](const picojson::value& item) {
+        // analyze array item
+        if (item.is<picojson::object>()) {
+            test_idna_v2(ddt, item.get<picojson::object>());
+        } else if (item.is<std::string>()) {
+            // comment
+            // std::cout << item.get<std::string>() << std::endl;
+        } else {
+            std::cout << "[ERR: invalid file]" << std::endl;
+            return false;
+        }
+        return true;
+    };
+    json_util::root_array_context<decltype(test_item)> context{ test_item };
+
+    return json_util::load_file(context, file_name);
 }
 
 // parses setters_tests.json
